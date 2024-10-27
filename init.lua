@@ -210,24 +210,50 @@ end
 local function restrictToInventoryCheck(itemName)
     -- Check if restrictToInventory is enabled and validate item location
     if restrictToInventory then
-        -- Find the item by exact name in the player's inventory (checking all slots)
-        local inventoryItem = mq.TLO.FindItem("=" .. itemName)
+        -- Create a list to store all instances of the item found in inventory
+        local matchingItems = {}
 
-        if inventoryItem and inventoryItem() then
-            local itemSlot = inventoryItem.ItemSlot()  -- Get the item slot number
+        -- Iterate over all main inventory slots (0-32)
+        for i = 0, 32 do
+            local item = mq.TLO.Me.Inventory(i)
+            if item() then
+                -- Check if the item in this slot matches the name
+                if item.Name() == itemName then
+                    table.insert(matchingItems, item)  -- Add matching item to the list
+                end
+
+                -- Check if the item is a container (a bag with slots)
+                local containerSlots = item.Container()  -- Returns the number of slots in the container
+                if containerSlots and containerSlots > 0 then
+                    -- Iterate over each slot in the container
+                    for j = 1, containerSlots do
+                        local containerItem = item.Item(j)
+                        if containerItem() and containerItem.Name() == itemName then
+                            table.insert(matchingItems, containerItem)  -- Add matching item inside the bag
+                        end
+                    end
+                end
+            end
+        end
+
+        -- Check if any of the matching items are in valid slots (23-32)
+        for _, matchedItem in ipairs(matchingItems) do
+            local itemSlot = matchedItem.ItemSlot()  -- Get the main slot number
 
             -- Check if the item is in the bag slots (slots 23 to 32)
-            if itemSlot < 23 or itemSlot > 32 then
-                printf("Item '" .. itemName .. "' is not in a bag (restricted to bags).")
-                return false  -- Skip the trade if the item is not found in a bag
+            if itemSlot >= 23 and itemSlot <= 32 then
+                return true  -- Valid item found in bag slots
             end
-        else
-            printf("Item '" .. itemName .. "' not found in inventory.")
-            return false  -- Skip if item is not found
         end
+
+        -- If no matching item found in slots 23-32
+        printf("Item '" .. itemName .. "' is not found in a valid bag slot (23-32).")
+        return false  -- Item is not in an acceptable location for trade
     end
-    return true  -- Item is valid for trade if checks pass
+
+    return true  -- If restrictToInventory is not enabled, allow the item
 end
+
 
 local function isItemAugmented(item)
     if item.Augs() > 0 then  -- Check if the item has any augment slots used
