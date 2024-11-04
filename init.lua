@@ -416,25 +416,38 @@ local function findClosestMatches(input, includeRaidMembers, includeGroupMembers
     return potentialNameMatches
 end
 
--- Validate the target name (NPC or PC)
-local function ValidateTargetID(targetID)
-    if not targetID or targetID == "" then
-        printf("No target ID provided.")
-        return false
+local function ValidateTargetByName(targetName)
+    if not targetName or targetName == "" then
+        return nil  -- Return nil explicitly if no target name is provided
     end
 
-    local nearbySpawn = mq.TLO.Spawn(targetID)
-    if nearbySpawn() then
-        printf('Targeting ID %s.', targetID)
-        mq.cmd('/target id ' .. targetID)
-        mq.delay(200)  -- Short delay for target acquisition
-        return true
+    -- Define a predicate to filter spawns by name, within 200 units, ensuring they are NPC or PC and not a pet
+    local function isValidTarget(spawn)
+        local isInRange = spawn.Distance() <= 200  -- Check if spawn is within 200 units
+        local isMatch = spawn.Name() == targetName
+        local isNPCorPC = spawn.Type() == "NPC" or spawn.Type() == "PC"
+        local isNotPet = spawn.Type() ~= "Pet"  -- Confirm the spawn type is not "Pet"
+
+        return isInRange and isMatch and isNPCorPC and isNotPet
+    end
+
+    -- Retrieve and filter spawns only when needed
+    local matchingSpawns = mq.getFilteredSpawns(isValidTarget)
+
+    -- Check if we have a valid spawn and return the first one's ID
+    if #matchingSpawns > 0 then
+        local targetID = matchingSpawns[1].ID()
+        if targetID then
+            mq.cmd('/target id ' .. targetID)  -- Target the spawn by ID
+            mq.delay(200)  -- Delay to allow targeting to complete
+            return targetID  -- Return the numeric ID directly
+        else
+            return nil
+        end
     else
-        printf("TargetID '%s' not found nearby.", targetID)
-        return false
+        return nil  -- Return nil if no valid target found
     end
 end
-
 
 -- Render item icon button in the GUI for a specific item field
 local function renderItemIconButton(itemName)
@@ -832,6 +845,12 @@ local function ClickTrade()
 end
 
 local function NavToTradeTargetByID(targetID)
+    -- Explicitly check if targetID is valid and not a boolean value
+    if type(targetID) ~= "number" then
+        printf("[ERROR] Invalid target ID: expected a number but got %s. Cannot navigate to target.", type(targetID))
+        return
+    end
+
     local distance = mq.TLO.Spawn("id " .. targetID).Distance3D() or 0
     if distance > 20 then
         printf('Moving to ID %s.', targetID)
@@ -840,23 +859,40 @@ local function NavToTradeTargetByID(targetID)
             mq.delay(50)
         end
         mq.cmd('/nav stop')
+        mq.delay(100)
         mq.cmd('/face')  -- Face the target
+    else
+        printf("[DEBUG] Target ID %s is already within 20 units, no navigation needed.", targetID)
     end
 end
 
 local function bind_tradeit(...)
-    local args = { ..., }
-    local cmd, name, itemName, amt = args[1], args[2], args[3], args[4]
+    local args = { ... }
+    local cmd, targetName, itemName, amt = args[1], args[2], args[3], args[4]
 
-    -- usage
-    if not cmd or not name then return end
+    if not cmd then
+        printf("[DEBUG] Command not provided. Exiting function.")
+        return
+    end
 
-    -- Get the target's ID by name
-    local targetID = mq.TLO.Spawn('"' .. name .. '"').ID()
+    -- For individual target commands, validate the target ID
+    local targetID
+    if cmd ~= 'group' and cmd ~= 'raid' then
+        if not targetName then
+            printf("[DEBUG] Target name not provided for command '%s'. Exiting function.", cmd)
+            return
+        end
+        targetID = ValidateTargetByName(targetName)
+        if not targetID then
+            printf("[DEBUG] No valid target ID found for name: %s", targetName)
+            return
+        end
+    end
 
-    if cmd == 'item' and targetID and itemName then
+    -- Execute trade command if valid targetID is found and 'cmd' is 'item'
+    if cmd == 'item' and itemName then
         local quantity = amt or 'all'
-        ValidateTargetID(targetID)
+
         NavToTradeTargetByID(targetID)
         OpenInventory()
         tradeit(itemName, quantity)
@@ -864,63 +900,61 @@ local function bind_tradeit(...)
         return true
 
     elseif cmd == 'list' and targetID then
-            ValidateTargetID(targetID)
-            NavToTradeTargetByID(targetID)
-            OpenInventory()
-    
-            -- Wait until all items have been processed by the button
-            if allItemsProcessed then
-                -- Once all items are processed, click trade
-                ClickTrade()
-                allItemsProcessed = false -- Reset the flag after trading
-                return true
-            else
-                printf("Waiting for all items to be processed before clicking trade.")
-                return false
-            end
+        NavToTradeTargetByID(targetID)
+        OpenInventory()
+
+        -- Wait until all items have been processed by the button
+        if allItemsProcessed then
+            ClickTrade()  -- Once all items are processed, click trade
+            allItemsProcessed = false  -- Reset the flag after trading
+            return true
+        else
+            printf("Waiting for all items to be processed before clicking trade.")
+            return false
+        end
 
     elseif cmd == 'coin' and targetID and itemName and amt then
-        ValidateTargetID(targetID)
         NavToTradeTargetByID(targetID)
         OpenInventory()
         tradeitCoin(itemName, amt)
         ClickTrade()
 
-    elseif cmd == 'group' and itemName and amt then
+    -- Updated group command format to handle '/bind_tradeit group coin <coinType> <amt>'
+    elseif cmd == 'group' and targetName == 'coin' and itemName and amt then
         OpenInventory()
         local groupMemberCount = mq.TLO.Group.Members()
         for i = 1, groupMemberCount do
-            local memberID = mq.TLO.Group.Member(i).ID()
-            local isOtherZone = mq.TLO.Group.Member(i).OtherZone()  -- Check if the group member is in another zone
-            if memberID and mq.TLO.Me.CleanName() ~= mq.TLO.Group.Member(i).CleanName() then
-                -- Check if the group member is in the same zone as the player
-                if not isOtherZone then  -- Only trade if the group member is in the same zone
-                    ValidateTargetID(memberID)
-                    NavToTradeTargetByID(memberID)
-                    tradeitCoin(itemName, amt)
-                    ClickTrade()
-                else
-                    printf("Skipping group member %s: not in the same zone.", mq.TLO.Group.Member(i).CleanName())
-                end
+            local memberName = mq.TLO.Group.Member(i).Name()
+            local memberID = ValidateTargetByName(memberName)
+
+            -- Ensure memberID is valid
+            if memberID then
+                NavToTradeTargetByID(memberID)
+                tradeitCoin(itemName, amt)
+                ClickTrade()
+            else
+                printf("Skipping group member %s: invalid target ID or self-target.", mq.TLO.Group.Member(i).CleanName())
             end
         end
 
-    elseif cmd == 'raid' and itemName and amt then
+    -- Updated raid command format to handle '/bind_tradeit raid coin <coinType> <amt>'
+    elseif cmd == 'raid' and targetName == 'coin' and itemName and amt then
         OpenInventory()
         local raidMemberCount = mq.TLO.Raid.Members()
         for i = 1, raidMemberCount do
             local memberName = mq.TLO.Raid.Member(i).CleanName()
-            local spawnID = mq.TLO.Spawn(memberName).ID()  -- Get spawn ID, 0 if not online or not in the same zone
-            if spawnID > 0 and mq.TLO.Me.CleanName() ~= memberName then
-                ValidateTargetID(spawnID)
-                NavToTradeTargetByID(spawnID)
+            local memberID = ValidateTargetByName(memberName)
+
+            -- Ensure memberID is valid
+            if memberID then
+                NavToTradeTargetByID(memberID)
                 tradeitCoin(itemName, amt)
                 ClickTrade()
             else
-                printf("Skipping raid member %s: not in the same zone or offline.", memberName)
+                printf("Skipping raid member %s: not in the same zone, offline, or invalid target ID.", memberName)
             end
         end
-    end
+    end  
 end
 
 local function isSpawnInRange(spawnName, maxDistance)
@@ -1218,6 +1252,7 @@ local function renderTradeCoinsInputSection()
         if isInRaid then
             if ValidateCoinAmount(coinAmountInput) and availableCoinAmount >= tonumber(coinAmountInput) then
                 mq.cmdf('/tradeit raid coin %s %s', coinTypeInput, coinAmountInput)
+
             else
                 printf("Not enough coins or invalid input.")
             end
