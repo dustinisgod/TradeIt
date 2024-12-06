@@ -1,3 +1,5 @@
+version=1.0.0
+
 TradeIt.lua - Trade Items or Coins to PC/NPC
 
 This script provides an easy-to-use interface for trading items or coins to player characters (PCs) or non-player characters (NPCs). It includes auto-fill features for item and player names, drag-and-drop support for items, and the ability to quickly distribute coins to group or raid members.
